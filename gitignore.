@@ -1,0 +1,19 @@
+# Dataset and Images
+dataset/
+augmentations/
+
+# Model Weights
+*.joblib
+*.pt
+*.pth
+
+# Python Cache and Environments
+__pycache__/
+*.pyc
+venv/
+env/
+.env
+
+# IDEs
+.vscode/
+.idea/
