@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
-from split_data import PROJECT_ROOT, load_split
+from split_data import DATA_ROOT, PROJECT_ROOT, load_split
 
 
 IMAGENET_MEAN: Final[tuple[float, float, float]] = (0.485, 0.456, 0.406)
@@ -27,13 +27,15 @@ IMAGENET_STD: Final[tuple[float, float, float]] = (0.229, 0.224, 0.225)
 BATCH_SIZE: Final[int] = 64
 NUM_WORKERS: Final[int] = 4
 
-# Fixed color-jitter factors — deliberately not random.
-JITTER_BRIGHTNESS: Final[float] = 1.3
-JITTER_CONTRAST: Final[float] = 1.3
-JITTER_SATURATION: Final[float] = 1.4
-JITTER_HUE: Final[float] = 0.05
+# Color-jitter factor ranges, measured from augmentations/color_jitter/. Each
+# image draws its four factors from these ranges using a seed derived from its
+# path, so the draw is per-image but never changes between runs.
+JITTER_BRIGHTNESS_RANGE: Final[tuple[float, float]] = (0.76, 1.15)
+JITTER_CONTRAST_RANGE: Final[tuple[float, float]] = (0.67, 1.31)
+JITTER_SATURATION_RANGE: Final[tuple[float, float]] = (0.68, 1.31)
+JITTER_HUE_RANGE: Final[tuple[float, float]] = (-0.01, 0.01)
 
-SALT_PEPPER_FRACTION: Final[float] = 0.02
+SALT_PEPPER_FRACTION: Final[float] = 0.03
 
 DEBUG_GRID_PATH: Final[Path] = PROJECT_ROOT / "debug_manipulations.png"
 
@@ -73,7 +75,7 @@ class BirdDataset(Dataset):
     def __getitem__(self, idx: int):
         relative_path, label = self.samples[idx]
 
-        with Image.open(PROJECT_ROOT / relative_path) as image:
+        with Image.open(DATA_ROOT / relative_path) as image:
             image = image.convert("RGB")
 
         if self.pre_transform is not None:
@@ -119,24 +121,38 @@ val_post_transform = transforms.Compose([
 
 # ── manipulations ─────────────────────────────────────────────────────────────
 
+def _seed_from_path(path: str, namespace: str = "") -> int:
+    """Stable 64-bit seed for a file path, identical across runs and machines.
+
+    ``namespace`` keeps two manipulations from drawing off the same stream.
+    """
+    digest = hashlib.sha256(f"{namespace}:{path}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 def to_black_white(image: Image.Image, path: str = "") -> Image.Image:
     """Grayscale, expanded back to 3 identical RGB channels."""
     return TF.to_grayscale(image, num_output_channels=3)
 
 
 def to_color_jitter(image: Image.Image, path: str = "") -> Image.Image:
-    """Fixed brightness / contrast / saturation / hue shift (never random)."""
-    image = TF.adjust_brightness(image, JITTER_BRIGHTNESS)
-    image = TF.adjust_contrast(image, JITTER_CONTRAST)
-    image = TF.adjust_saturation(image, JITTER_SATURATION)
-    image = TF.adjust_hue(image, JITTER_HUE)
+    """Brightness / contrast / saturation / hue shift, fixed per image.
+
+    The four factors are drawn uniformly from the measured ranges using a seed
+    hashed from the file path, so each image keeps its own shift for good.
+    """
+    rng = np.random.default_rng(_seed_from_path(path, "color_jitter"))
+
+    brightness = rng.uniform(*JITTER_BRIGHTNESS_RANGE)
+    contrast = rng.uniform(*JITTER_CONTRAST_RANGE)
+    saturation = rng.uniform(*JITTER_SATURATION_RANGE)
+    hue = rng.uniform(*JITTER_HUE_RANGE)
+
+    image = TF.adjust_brightness(image, brightness)
+    image = TF.adjust_contrast(image, contrast)
+    image = TF.adjust_saturation(image, saturation)
+    image = TF.adjust_hue(image, hue)
     return image
-
-
-def _seed_from_path(path: str) -> int:
-    """Stable 64-bit seed for a file path, identical across runs and machines."""
-    digest = hashlib.sha256(path.encode("utf-8")).digest()
-    return int.from_bytes(digest[:8], "big")
 
 
 def to_salt_pepper(
@@ -156,7 +172,7 @@ def to_salt_pepper(
     n_each = int(round(n_pixels * fraction / 2))
 
     if n_each > 0:
-        rng = np.random.default_rng(_seed_from_path(path))
+        rng = np.random.default_rng(_seed_from_path(path, "salt_pepper"))
         chosen = rng.choice(n_pixels, size=2 * n_each, replace=False)
 
         pepper = np.unravel_index(chosen[:n_each], (height, width))
@@ -269,7 +285,7 @@ def _save_manipulation_grid(
         draw.text((x, 4), name, fill="black")
 
     for row, (relative_path, _) in enumerate(picks):
-        with Image.open(PROJECT_ROOT / relative_path) as image:
+        with Image.open(DATA_ROOT / relative_path) as image:
             image = image.convert("RGB")
 
         base = val_pre_transform(image)

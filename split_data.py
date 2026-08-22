@@ -9,6 +9,7 @@ Import ``load_split()`` from train.py to get the two lists of samples.
 from __future__ import annotations
 
 import json
+import os
 import random
 from pathlib import Path
 from typing import Final
@@ -24,15 +25,24 @@ VAL_FRACTION: Final[float] = 0.2
 SEED: Final[int] = 42
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent
-DATASET_DIR: Final[Path] = PROJECT_ROOT / "dataset"
 
-# The raw training images. Supports both dataset/train_set and dataset/train.
+# Where the raw images live. Set BIRD_DATA_ROOT to keep them off a synced
+# volume (iCloud Drive decoding 20k JPEGs per epoch is slow); otherwise fall
+# back to the in-project dataset/ folder.
+DATA_ROOT: Final[Path] = Path(
+    os.environ.get("BIRD_DATA_ROOT", PROJECT_ROOT / "dataset")
+).expanduser().resolve()
+
+# Recorded paths stay relative to DATA_ROOT, so moving the images only means
+# pointing BIRD_DATA_ROOT somewhere else — split.json itself stays portable.
 TRAIN_ROOT_CANDIDATES: Final[tuple[Path, ...]] = (
-    DATASET_DIR / "train_set",
-    DATASET_DIR / "train",
+    DATA_ROOT / "train_set",
+    DATA_ROOT / "train",
 )
 
-SPLIT_PATH: Final[Path] = DATASET_DIR / "split.json"
+# split.json stays in the project, next to labels.json, so it is version
+# controlled with the code rather than with the images.
+SPLIT_PATH: Final[Path] = PROJECT_ROOT / "dataset" / "split.json"
 
 IMAGE_PATTERNS: Final[tuple[str, ...]] = ("*.jpg", "*.jpeg", "*.JPEG", "*.png")
 
@@ -49,7 +59,9 @@ def _resolve_train_root() -> Path:
     if train_root is None:
         expected = "\n".join(f"  - {path}" for path in TRAIN_ROOT_CANDIDATES)
         raise FileNotFoundError(
-            f"Training folder not found. Expected one of:\n{expected}"
+            f"Training folder not found. Expected one of:\n{expected}\n"
+            f"Set BIRD_DATA_ROOT to the folder holding train/ if the images "
+            f"live outside the project."
         )
 
     return train_root
@@ -117,7 +129,7 @@ def build_split(
         n_val = int(round(len(image_paths) * val_fraction))
 
         for position, img_path in enumerate(image_paths):
-            relative_path = img_path.relative_to(PROJECT_ROOT).as_posix()
+            relative_path = img_path.relative_to(DATA_ROOT).as_posix()
             sample = (relative_path, local_idx)
 
             if position < n_val:
@@ -141,6 +153,7 @@ def save_split(
     payload = {
         "seed": seed,
         "val_fraction": val_fraction,
+        "data_root": str(DATA_ROOT),
         "train": [[path, label] for path, label in train_samples],
         "val": [[path, label] for path, label in val_samples],
     }
