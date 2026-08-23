@@ -6,6 +6,7 @@ used at the end for reporting only. Produces weights.joblib next to this file.
 Run:
   python train.py
   python train.py --epochs 1     # quick sanity run
+  python train.py --robust --out weights_robust.joblib
 """
 
 import argparse
@@ -42,7 +43,8 @@ LR = 3e-4
 WEIGHT_DECAY = 1e-4
 NUM_WORKERS = 4
 
-OUTPUT_PATH = Path(__file__).resolve().parent / "weights.joblib"
+OUTPUT_NAME = "weights.joblib"
+OUTPUT_DIR = Path(__file__).resolve().parent
 
 
 def pick_device() -> torch.device:
@@ -104,6 +106,20 @@ def parse_args() -> argparse.Namespace:
         default=EPOCHS,
         help=f"number of epochs, overrides EPOCHS (default: {EPOCHS})",
     )
+    parser.add_argument(
+        "--robust",
+        action="store_true",
+        help="train with grayscale + color-jitter augmentation (experiment 1)",
+    )
+    parser.add_argument(
+        "--out",
+        type=str,
+        default=OUTPUT_NAME,
+        help=(
+            f"where to write the weights; a bare name lands next to train.py "
+            f"(default: {OUTPUT_NAME})"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -111,11 +127,24 @@ def main() -> None:
     args = parse_args()
     epochs = args.epochs
 
+    # A bare filename stays next to train.py; a path is honoured as given.
+    output_path = Path(args.out).expanduser()
+    if not output_path.is_absolute():
+        output_path = OUTPUT_DIR / output_path
+
     device = pick_device()
     print(f"Device: {device}")
-    print(f"Epochs: {epochs} | batch {BATCH_SIZE} | lr {LR} | wd {WEIGHT_DECAY}\n")
+    print(f"Epochs: {epochs} | batch {BATCH_SIZE} | lr {LR} | wd {WEIGHT_DECAY}")
 
-    train_loader = get_train_loader(BATCH_SIZE, NUM_WORKERS)
+    transform_name = (
+        "train_transform_robust (grayscale + color jitter)"
+        if args.robust
+        else "train_transform (baseline, no manipulation)"
+    )
+    print(f"Train transform: {transform_name}")
+    print(f"Weights out:     {output_path}\n")
+
+    train_loader = get_train_loader(BATCH_SIZE, NUM_WORKERS, robust=args.robust)
     val_loader = get_val_loader(BATCH_SIZE, NUM_WORKERS)
 
     model = ModelArchitecture(num_classes=20).to(device)
@@ -154,7 +183,7 @@ def main() -> None:
                 key: value.cpu()
                 for key, value in model.state_dict().items()
             }
-            joblib.dump(state_dict, OUTPUT_PATH)
+            joblib.dump(state_dict, output_path)
 
         print(
             f"epoch {epoch:>3}/{epochs}  "
@@ -164,13 +193,13 @@ def main() -> None:
             f"{'  <- saved' if improved else ''}"
         )
 
-    if not OUTPUT_PATH.exists():
-        raise RuntimeError(f"No weights were saved to {OUTPUT_PATH}")
+    if not output_path.exists():
+        raise RuntimeError(f"No weights were saved to {output_path}")
 
     print(f"\nBest clean val accuracy: {best_accuracy:.4f}")
-    print(f"Reloading {OUTPUT_PATH.name} for the final report...\n")
+    print(f"Reloading {output_path.name} for the final report...\n")
 
-    model.load_state_dict(joblib.load(OUTPUT_PATH))
+    model.load_state_dict(joblib.load(output_path))
     model.to(device)
 
     clean_accuracy = evaluate(model, val_loader, device)

@@ -37,6 +37,11 @@ JITTER_HUE_RANGE: Final[tuple[float, float]] = (-0.01, 0.01)
 
 SALT_PEPPER_FRACTION: Final[float] = 0.03
 
+# Experiment 2 (retired): Gaussian pixel noise on the training tensors. Kept as
+# the defaults of RandomGaussianNoise, which is no longer used by any pipeline.
+NOISE_PROBABILITY: Final[float] = 0.25
+NOISE_STD_RANGE: Final[tuple[float, float]] = (0.02, 0.10)
+
 DEBUG_GRID_PATH: Final[Path] = PROJECT_ROOT / "debug_manipulations.png"
 
 Sample = tuple[str, int]
@@ -92,9 +97,68 @@ class BirdDataset(Dataset):
 
 # ── transforms ────────────────────────────────────────────────────────────────
 
+class RandomGaussianNoise:
+    """With probability ``p``, add N(0, sigma) noise to every pixel.
+
+    Retired: experiment 2 wired this into train_transform_robust and it was
+    dropped in experiment 3. Kept here as a record of what was tried.
+
+    Runs on the already-normalized tensor, so ``sigma`` is in normalized units
+    and is redrawn per image from ``std_range``. This is Gaussian noise only —
+    salt and pepper is never applied to training data.
+    """
+
+    def __init__(
+        self,
+        p: float = NOISE_PROBABILITY,
+        std_range: tuple[float, float] = NOISE_STD_RANGE,
+    ):
+        self.p = p
+        self.std_range = std_range
+
+    def __call__(self, tensor: torch.Tensor) -> torch.Tensor:
+        if torch.rand(1).item() >= self.p:
+            return tensor
+
+        low, high = self.std_range
+        std = torch.empty(1).uniform_(low, high).item()
+
+        return tensor + torch.randn_like(tensor) * std
+
+    def __repr__(self) -> str:
+        return (
+            f"{self.__class__.__name__}("
+            f"p={self.p}, std_range={self.std_range})"
+        )
+
+
 train_transform = transforms.Compose([
     transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
     transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+])
+
+# Experiment 1 settings, kept after experiments 2 and 3 both lost ground on the
+# held-out salt-and-pepper probe: Gaussian pixel noise (2) and stronger colour
+# augmentation (3) were tried and reverted. RandomGaussianNoise stays defined
+# above but is no longer part of any pipeline. Salt and pepper is deliberately
+# absent — it stays held out for the stress set only.
+train_transform_robust = transforms.Compose([
+    transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomGrayscale(p=0.3),
+    transforms.RandomApply(
+        [
+            transforms.ColorJitter(
+                brightness=0.4,
+                contrast=0.4,
+                saturation=0.4,
+                hue=0.05,
+            )
+        ],
+        p=0.5,
+    ),
     transforms.ToTensor(),
     transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
 ])
@@ -196,11 +260,16 @@ MANIPULATIONS: Final[dict[str, Manipulation]] = {
 def get_train_loader(
     batch_size: int = BATCH_SIZE,
     num_workers: int = NUM_WORKERS,
+    robust: bool = False,
 ) -> DataLoader:
-    """Shuffled loader over the 16000 training images."""
+    """Shuffled loader over the 16000 training images.
+
+    ``robust`` swaps in train_transform_robust (grayscale + color jitter).
+    """
     train_samples, _ = load_split()
 
-    dataset = BirdDataset(train_samples, transform=train_transform)
+    transform = train_transform_robust if robust else train_transform
+    dataset = BirdDataset(train_samples, transform=transform)
 
     return DataLoader(
         dataset,
