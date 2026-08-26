@@ -1,0 +1,182 @@
+dorshneider
+209222694
+
+------MODEL ARCHITECTURE------
+
+A small ResNet-style CNN trained from random initialization, 2.8M parameters.
+Instead of starting with a large kernel and MaxPool to shrink the size of the input image,
+I chose to use a small 3x3 filter with a relatively small width and high depth,
+because a lot of filters would make the net very wide very soon, which means a lot of
+parameters which we want to avoid. Because there are only 16,000 Images for training
+(I Chose 80% train 20% validation) a net with tens of millions of parameters would probably
+achieve overfit on the set.
+we are trying to distinguish between 20 bird classes that look very similar,
+and the differences lie in tiny details like the shape of the beak or neck.
+If I had shrunk the image right at the start (downsampling),
+I would have thrown away this crucial, hard to notice information.
+
+I limited the width: the number of filters starts at 32 and
+gradually doubles to 64, 128, and up to a maximum of 256 channels.
+To ensure the network is still smart enough to learn complex patterns
+despite being narrow, I used depth, the image passes through 4 processing
+stages, each containing 2 convolution blocks. Across these stages, the
+physical spatial resolution (the pixels)  drops from 112 to 56, to 28, and finally to 14.
+To prevent vanishing gradient in the backpropogation here
+each block includes Skip Connection.
+
+At the end, I have global average pooling in order to prevent overfit (the model decides based on
+the features and not their specific location in the image) , dropout at 0.2, and a single linear layer to
+20 logits.
+
+
+-----TRAINING STRATEGY-------
+To train the model, I used a batch size of 64,
+a learning rate of 3e-4, cross-entropy with label
+smoothing of 0.1, and trained for 30 epochs. I chose 30
+epochs because the clean validation accuracy does not really changes around
+epoch 25, so going further is pointless.
+
+Small training dataset would lead the model to find 'shortcuts', like relying only on the bird's color.
+I looked into standard machine learning best practices that prevent a model from memorizing.
+I chose AdamW because it has a built-in mechanism called Weight Decay.
+This mechanism penalizes decay the weights to 0 at every learning step, so if for example we got a single weight
+that memorized a specific image of a flamingo, it will help the model solve a flamingo picture but will keep shrinking on
+the other images, but a "generalized" weight that recognize a shape or a beak will keep getting score each image
+
+the learning rate needs to decrease as we get closer to the end of the training.
+Cosine Annealing allows the model to make very tiny adjustments to its weights without ruining what it already learned.
+Instead of guessing when to lower the rate, I used Cosine Annealing,
+which smoothly reduces the step size. This helped the model stabilize optimally.
+
+
+
+
+
+---------EVALUATION METHODOLOGY---------
+
+To evaluate the model, I split the 20,000 training images into 16,000 for
+training (80%) and 4,000 for validation (20%). I made sure this split was balanced,
+meaning every bird class contributed exactly 800 images to training and 200 to validation.
+I also used a fixed random seed to ensure this exact split remained identical across all my experiments,
+so any change in accuracy is purely due to the model's performance, not a lucky data split.
+
+The augmentations/ folder contains only 20 images per class, too few
+to measure with. So instead of using those  images, I wrote code to recreate three types of image manipulations:
+Black and White, Color Jitter,Salt-and-Pepper Noise.
+Important - when recreating the manipulations i made sure it's accurate to the augmentations folder
+meaning i corrupted around the same % of pixels of the images in salt and pepper
+I changed the contrast saturation and brighness at similar scale range and I created same black and white images.
+Then, I applied these manipulations to my entire set of 4,000 validation images.
+This gave me three full-sized "stress sets" to properly test how robust my model really is
+The color changing is selected from a given range which randomly gives images cold/warm manipulation.
+the image path used as the seed so the randomness is across the entire dataset, meaning each specific image will always
+get the same random manipulation accross al test runs.
+
+-------HELD-OUT MANIPULATION--------
+
+The final test uses manipulations we cannot see. A model trained on the three
+manipulations we do have and evaluated on those same three would produce a
+number that predicts nothing -- it would only show that the network learned
+what it was shown.
+
+so I held out salt-and-pepper noise entirely. It never appears in
+training. It is the only honest evidence we have
+about generalization to an unseen manipulation, and as reported below it is
+what disqualified  exp2 and exp3.
+
+salt-and-pepper as the held-out because it works by a
+different mechanism from the other two. Black and White and color jitter both
+change pixel values smoothly and globally. salt-and-pepper completly change isolated
+pixels. If the model trains on the two above and still succeed in the salt and pepper test
+its the best proof to the model robustness.
+
+--------------EXPERIMENTS------------
+
+                        baseline    exp 1     exp 2     exp 3
+  clean                   79.97     79.95     79.97     78.40
+  black_white             34.60     69.57     68.93     72.75
+  color_jitter            76.15     78.43     78.83     77.82
+  salt_pepper (held out)  43.43     25.75     23.20     13.33
+  ------------------------------------------------------------
+  stress mean             51.39     57.92     56.98     54.63
+
+Baseline:
+I trained a basic model using only standard cropping and flipping.
+This revealed a weakness: low score black-and-white images.The reason is that the model found a
+shortcut it relied almost entirely on color to identify birds instead of learning their actual shapes.
+It also lost 37 points on salt-and-pepper
+noise because the corrupted pixels created thousands of "fake edges" that
+confused the network's early layers.The corrupted pixels are only 3% of the image, but each one is an extreme jump
+against its neighbours, and the early convolutional layers respond precisely
+to sharp local changes because that is how they detect edges. The noise
+enters the network as thousands of false edges.
+
+
+Experiment 1
+Here i tried to make sure the model does not relay on the color
+I applied random augmentations:  With a probability of 30% (p=0.3),
+the image was converted to black/white .with 50% (p=0.5) the image went to Color Jitter
+Those changes applied randomaly each epoch so the model never sees the exact same image twice.
+It gets an unlimited number of variants of the same bird.
+Now, the network is forced to strengthen the features that remain
+This strategy was successful for its intended purpose accuracy on
+black-and-white images doubled (from 34.6% to 69.6%), and the clean image accuracy did not drop at all.
+The Trade-off:
+because the model transferred its dependency from color onto shapes and edges,
+it became much more vulnerable to things that corrupt shapes and
+edges. And so, the result on the held-out salt-and-pepper noise
+(which destroys edge pixels) fell from 43.4% down to 25.8%.  I ultimately submitted Experiment 1
+because it offered the best average stress score, lost nothing on clean accuracy.
+
+Experiment 2
+
+experiment 1 plus Gaussian pixel noise
+
+This supposed to solve the salt and pepper drop from exp1.but it failed salt-and-pepper dropped further, to 23.2, and nothing else improved.
+
+Why it Failed:
+Gaussian noise is gentle - the model learns to ignore gentle noises.
+but the salt pepper noise is extreme and completely "deletes" a pixel
+By training the network against gentle noise, I actually taught it
+that small deviations are meaningless, so when the model have seen extreme deviations in the salt and pepper
+it realized its something meaningful and the model became more sensitive to them instead of ignoring.
+Robustness to noise is different accross noise types.
+
+Experiment 3
+
+Here i gave up on what i tried in exp2, and tried to amplify what i did in exp1 that actually worked
+i increased the probabilities of black and white from 30% to 50% and the color jitter to 70%.
+The black and white score improved slightly but the other scores got worse, the model now is
+even more so relaying on the shapes which obviously will make the salt pepper go down as mentioned before.
+
+In General
+Less Color dependecy = more shape dependency = score on salt and pepper goes down.
+
+
+We submit experiment 1. It has the best stress mean, loses nothing on clean
+accuracy, and among the configurations we tried it is the least brittle on
+the manipulation it never saw.
+
+
+A NOTE ON MEASUREMENT NOISE
+
+Exact same run of experiment 1 from scratch with identical settings to produce the
+submitted weights. Clean, black and white and color jitter accuracy remaained the same to a differenc of
+0.7 points change but Salt-and-pepper moved from 32.5 to 25.8.
+
+That is a 7-point change between two runs that are different only in random
+initialization, which means the salt and pepper number is  noisier than
+the other three. The overall change across experiments (43.4 down to 13.3)
+is too large to be noise. I report the second run's numbers above, since
+those what i got in the second run of exp1.
+
+
+KNOWN WEAKNESS
+
+The submitted model is more sensitive to sparse extreme pixel corruption than
+the baseline was. If the final test includes a manipulation of that kind, It
+will lose accuracy there.
+
+I accepted this knowingly. The challenge description specifies background,
+lighting and color manipulations, and on those the  model is
+better than the baseline with no loss on clean images.
